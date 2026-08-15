@@ -1,0 +1,21 @@
+# Reproducible build of the on-chain program, used to measure the deployed size.
+#
+#   docker build -f Dockerfile.program -t manna-program .
+#   docker run --rm -v "$PWD/out:/out" manna-program
+#
+# The .so lands in ./out and its byte size is printed; that byte count is what
+# rent-exemption for the program account is charged against.
+FROM solanafoundation/anchor:v0.32.1
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock Anchor.toml ./
+COPY programs ./programs
+
+RUN anchor build --no-idl
+
+CMD ["sh", "-c", "\
+    ls -l target/deploy/manna_controller.so; \
+    SIZE=$(wc -c < target/deploy/manna_controller.so); \
+    echo \"bytes: $SIZE\"; \
+    echo \"KiB:   $(( SIZE / 1024 ))\"; \
+    mkdir -p /out && cp target/deploy/manna_controller.so /out/ 2>/dev/null || true"]

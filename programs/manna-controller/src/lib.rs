@@ -1,47 +1,336 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::program_option::COption;
-use anchor_spl::associated_token::AssociatedToken;
-use anchor_spl::token_interface::{
-    burn, mint_to, transfer_checked, Burn, Mint, MintTo, TokenAccount, TokenInterface,
-    TransferChecked,
-};
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
+use anchor_lang::solana_program::program::{invoke, invoke_signed};
 
 declare_id!("7QZLtciaBCeLy5uyooZERzBNbPLNuQ6Ppc4iA2kqEsyR");
 
 const CONFIG_SEED: &[u8] = b"config";
 const TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+const TOKEN_PROGRAM_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
+    pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 const MNA_DECIMALS: u8 = 6;
 const QUOTE_DECIMALS: u8 = 6;
 const RATE_MNA: u64 = 1;
 const RATE_QUOTE: u64 = 2;
+
+// ---------------------------------------------------------------------------
+// Raw SPL Token / Token-2022 account access.
+//
+// Token-2022 keeps the legacy layouts as its base, so the same offsets read
+// both programs' accounts:
+//
+//   Mint  (82 bytes): mint_authority COption<Pubkey> [0..36], supply u64
+//                     [36..44], decimals u8 [44], is_initialized u8 [45],
+//                     freeze_authority COption<Pubkey> [46..82]
+//   Token (165 bytes): mint [0..32], owner [32..64], amount u64 [64..72],
+//                      delegate COption<Pubkey> [72..108], state u8 [108]
+//
+// When a Token-2022 account carries extensions it is longer than the base and
+// stores a discriminant byte at offset 165 (1 = Mint, 2 = Account). That byte
+// is what disambiguates an extended mint from a token account, since an
+// extended mint can otherwise reach exactly the 165-byte token account size.
+// ---------------------------------------------------------------------------
+
+const MINT_LEN: usize = 82;
+const TOKEN_LEN: usize = 165;
+const ACCOUNT_TYPE_OFFSET: usize = 165;
+const ACCOUNT_TYPE_MINT: u8 = 1;
+const ACCOUNT_TYPE_TOKEN: u8 = 2;
+
+fn read_pubkey(data: &[u8], offset: usize) -> Pubkey {
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&data[offset..offset + 32]);
+    Pubkey::new_from_array(key)
+}
+
+fn read_u64(data: &[u8], offset: usize) -> u64 {
+    let mut value = [0u8; 8];
+    value.copy_from_slice(&data[offset..offset + 8]);
+    u64::from_le_bytes(value)
+}
+
+/// Fields we need off a mint, read without deserializing the whole account.
+struct MintView {
+    decimals: u8,
+    mint_authority: Option<Pubkey>,
+}
+
+fn load_mint(account: &AccountInfo, token_program: &Pubkey) -> Result<MintView> {
+    require_keys_eq!(*account.owner, *token_program, MannaError::InvalidTokenAccount);
+    let data = account.try_borrow_data()?;
+    let len = data.len();
+    require!(len >= MINT_LEN, MannaError::InvalidTokenAccount);
+    // A longer-than-base account is only a mint if it is tagged as one.
+    if len > MINT_LEN {
+        require!(
+            len > ACCOUNT_TYPE_OFFSET && data[ACCOUNT_TYPE_OFFSET] == ACCOUNT_TYPE_MINT,
+            MannaError::InvalidTokenAccount
+        );
+    }
+    require!(data[45] == 1, MannaError::InvalidTokenAccount);
+
+    let mint_authority = match data[0..4] {
+        [1, 0, 0, 0] => Some(read_pubkey(&data, 4)),
+        _ => None,
+    };
+    Ok(MintView {
+        decimals: data[44],
+        mint_authority,
+    })
+}
+
+/// Fields we need off a token account, read without deserializing extensions.
+struct TokenView {
+    mint: Pubkey,
+    owner: Pubkey,
+    amount: u64,
+}
+
+fn load_token_account(account: &AccountInfo, token_program: &Pubkey) -> Result<TokenView> {
+    require_keys_eq!(*account.owner, *token_program, MannaError::InvalidTokenAccount);
+    let data = account.try_borrow_data()?;
+    let len = data.len();
+    require!(len >= TOKEN_LEN, MannaError::InvalidTokenAccount);
+    if len > TOKEN_LEN {
+        require!(
+            len > ACCOUNT_TYPE_OFFSET && data[ACCOUNT_TYPE_OFFSET] == ACCOUNT_TYPE_TOKEN,
+            MannaError::InvalidTokenAccount
+        );
+    }
+    // state: 0 = uninitialized, 1 = initialized, 2 = frozen.
+    require!(data[108] != 0, MannaError::InvalidTokenAccount);
+
+    Ok(TokenView {
+        mint: read_pubkey(&data, 0),
+        owner: read_pubkey(&data, 32),
+        amount: read_u64(&data, 64),
+    })
+}
+
+/// Assert a token account belongs to `mint` and is controlled by `authority`.
+fn require_token_account(
+    account: &AccountInfo,
+    token_program: &Pubkey,
+    mint: &Pubkey,
+    authority: &Pubkey,
+) -> Result<TokenView> {
+    let view = load_token_account(account, token_program)?;
+    require_keys_eq!(view.mint, *mint, MannaError::InvalidTokenAccount);
+    require_keys_eq!(view.owner, *authority, MannaError::InvalidTokenAccount);
+    Ok(view)
+}
+
+fn require_token_program(program: &AccountInfo) -> Result<()> {
+    require!(
+        *program.key == TOKEN_PROGRAM_ID || *program.key == TOKEN_2022_PROGRAM_ID,
+        MannaError::InvalidTokenProgram
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Hand-rolled SPL Token CPIs. Instruction tags are stable across both the
+// legacy Token program and Token-2022.
+// ---------------------------------------------------------------------------
+
+const IX_MINT_TO: u8 = 7;
+const IX_BURN: u8 = 8;
+const IX_TRANSFER_CHECKED: u8 = 12;
+
+fn amount_data(tag: u8, amount: u64) -> [u8; 9] {
+    let mut data = [0u8; 9];
+    data[0] = tag;
+    data[1..9].copy_from_slice(&amount.to_le_bytes());
+    data
+}
+
+fn transfer_checked(
+    token_program: &AccountInfo,
+    from: &AccountInfo,
+    mint: &AccountInfo,
+    to: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+    decimals: u8,
+    signer_seeds: Option<&[&[&[u8]]]>,
+) -> Result<()> {
+    let mut data = [0u8; 10];
+    data[0] = IX_TRANSFER_CHECKED;
+    data[1..9].copy_from_slice(&amount.to_le_bytes());
+    data[9] = decimals;
+
+    let ix = Instruction {
+        program_id: *token_program.key,
+        accounts: vec![
+            AccountMeta::new(*from.key, false),
+            AccountMeta::new_readonly(*mint.key, false),
+            AccountMeta::new(*to.key, false),
+            AccountMeta::new_readonly(*authority.key, true),
+        ],
+        data: data.to_vec(),
+    };
+    let infos = [
+        from.clone(),
+        mint.clone(),
+        to.clone(),
+        authority.clone(),
+        token_program.clone(),
+    ];
+    match signer_seeds {
+        Some(seeds) => invoke_signed(&ix, &infos, seeds)?,
+        None => invoke(&ix, &infos)?,
+    }
+    Ok(())
+}
+
+fn mint_to(
+    token_program: &AccountInfo,
+    mint: &AccountInfo,
+    to: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+    signer_seeds: &[&[&[u8]]],
+) -> Result<()> {
+    let ix = Instruction {
+        program_id: *token_program.key,
+        accounts: vec![
+            AccountMeta::new(*mint.key, false),
+            AccountMeta::new(*to.key, false),
+            AccountMeta::new_readonly(*authority.key, true),
+        ],
+        data: amount_data(IX_MINT_TO, amount).to_vec(),
+    };
+    invoke_signed(
+        &ix,
+        &[mint.clone(), to.clone(), authority.clone(), token_program.clone()],
+        signer_seeds,
+    )?;
+    Ok(())
+}
+
+fn burn(
+    token_program: &AccountInfo,
+    from: &AccountInfo,
+    mint: &AccountInfo,
+    authority: &AccountInfo,
+    amount: u64,
+) -> Result<()> {
+    let ix = Instruction {
+        program_id: *token_program.key,
+        accounts: vec![
+            AccountMeta::new(*from.key, false),
+            AccountMeta::new(*mint.key, false),
+            AccountMeta::new_readonly(*authority.key, true),
+        ],
+        data: amount_data(IX_BURN, amount).to_vec(),
+    };
+    invoke(
+        &ix,
+        &[from.clone(), mint.clone(), authority.clone(), token_program.clone()],
+    )?;
+    Ok(())
+}
+
+/// Associated Token Program `Create` (tag 0) — fails if the ATA already exists,
+/// matching the semantics of Anchor's `init` constraint.
+#[allow(clippy::too_many_arguments)]
+fn create_associated_token_account(
+    ata_program: &AccountInfo,
+    payer: &AccountInfo,
+    ata: &AccountInfo,
+    owner: &AccountInfo,
+    mint: &AccountInfo,
+    system_program: &AccountInfo,
+    token_program: &AccountInfo,
+) -> Result<()> {
+    let ix = Instruction {
+        program_id: *ata_program.key,
+        accounts: vec![
+            AccountMeta::new(*payer.key, true),
+            AccountMeta::new(*ata.key, false),
+            AccountMeta::new_readonly(*owner.key, false),
+            AccountMeta::new_readonly(*mint.key, false),
+            AccountMeta::new_readonly(*system_program.key, false),
+            AccountMeta::new_readonly(*token_program.key, false),
+        ],
+        data: vec![0],
+    };
+    invoke(
+        &ix,
+        &[
+            payer.clone(),
+            ata.clone(),
+            owner.clone(),
+            mint.clone(),
+            system_program.clone(),
+            token_program.clone(),
+        ],
+    )?;
+    Ok(())
+}
 
 #[program]
 pub mod manna_controller {
     use super::*;
 
     pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        let config = &mut ctx.accounts.config;
-        let mna_mint = &ctx.accounts.mna_mint;
-        let quote_mint = &ctx.accounts.quote_mint;
-
         require_keys_eq!(
             ctx.accounts.mna_token_program.key(),
             TOKEN_2022_PROGRAM_ID,
             MannaError::InvalidMnaTokenProgram
         );
+        require_keys_eq!(
+            ctx.accounts.associated_token_program.key(),
+            ASSOCIATED_TOKEN_PROGRAM_ID,
+            MannaError::InvalidTokenProgram
+        );
+        require_token_program(&ctx.accounts.quote_token_program)?;
+
+        let config_key = ctx.accounts.config.key();
+
+        let mna_mint = load_mint(&ctx.accounts.mna_mint, &TOKEN_2022_PROGRAM_ID)?;
         require!(
-            mna_mint.mint_authority == COption::Some(config.key()),
+            mna_mint.mint_authority == Some(config_key),
             MannaError::InvalidMnaMintAuthority
         );
-        require!(mna_mint.decimals == MNA_DECIMALS, MannaError::InvalidMnaDecimals);
+        require!(
+            mna_mint.decimals == MNA_DECIMALS,
+            MannaError::InvalidMnaDecimals
+        );
+
+        let quote_mint = load_mint(
+            &ctx.accounts.quote_mint,
+            ctx.accounts.quote_token_program.key,
+        )?;
         require!(
             quote_mint.decimals == QUOTE_DECIMALS,
             MannaError::InvalidQuoteDecimals
         );
 
+        // The Associated Token Program derives the address itself and rejects a
+        // mismatch, so creating through it is what pins `quote_vault` to the
+        // canonical ATA of (config, quote_mint).
+        create_associated_token_account(
+            &ctx.accounts.associated_token_program,
+            &ctx.accounts.payer,
+            &ctx.accounts.quote_vault,
+            &ctx.accounts.config.to_account_info(),
+            &ctx.accounts.quote_mint,
+            &ctx.accounts.system_program,
+            &ctx.accounts.quote_token_program,
+        )?;
+        require_token_account(
+            &ctx.accounts.quote_vault,
+            ctx.accounts.quote_token_program.key,
+            ctx.accounts.quote_mint.key,
+            &config_key,
+        )?;
+
+        let config = &mut ctx.accounts.config;
         config.admin = ctx.accounts.admin.key();
-        config.mna_mint = mna_mint.key();
-        config.quote_mint = quote_mint.key();
+        config.mna_mint = ctx.accounts.mna_mint.key();
+        config.quote_mint = ctx.accounts.quote_mint.key();
         config.quote_vault = ctx.accounts.quote_vault.key();
         config.quote_token_program = ctx.accounts.quote_token_program.key();
         config.mna_decimals = MNA_DECIMALS;
@@ -66,40 +355,81 @@ pub mod manna_controller {
         require!(!config.paused, MannaError::Paused);
         require!(quote_amount > 0, MannaError::ZeroAmount);
 
-        let mna_amount = quote_amount_to_mna(quote_amount)?;
+        let quote_token_program = &ctx.accounts.quote_token_program;
+        require_keys_eq!(
+            quote_token_program.key(),
+            config.quote_token_program,
+            MannaError::InvalidTokenProgram
+        );
+        require_keys_eq!(
+            ctx.accounts.mna_token_program.key(),
+            TOKEN_2022_PROGRAM_ID,
+            MannaError::InvalidMnaTokenProgram
+        );
+        require_keys_eq!(
+            ctx.accounts.mna_mint.key(),
+            config.mna_mint,
+            MannaError::InvalidTokenAccount
+        );
+        require_keys_eq!(
+            ctx.accounts.quote_mint.key(),
+            config.quote_mint,
+            MannaError::InvalidTokenAccount
+        );
+        require_keys_eq!(
+            ctx.accounts.quote_vault.key(),
+            config.quote_vault,
+            MannaError::InvalidTokenAccount
+        );
 
-        let quote_transfer_accounts = TransferChecked {
-            from: ctx.accounts.user_quote_account.to_account_info(),
-            mint: ctx.accounts.quote_mint.to_account_info(),
-            to: ctx.accounts.quote_vault.to_account_info(),
-            authority: ctx.accounts.user.to_account_info(),
-        };
-        transfer_checked(
-            CpiContext::new(
-                ctx.accounts.quote_token_program.to_account_info(),
-                quote_transfer_accounts,
-            ),
-            quote_amount,
-            config.quote_decimals,
+        let user_key = ctx.accounts.user.key();
+        let config_key = config.key();
+        require_token_account(
+            &ctx.accounts.user_quote_account,
+            quote_token_program.key,
+            &config.quote_mint,
+            &user_key,
+        )?;
+        require_token_account(
+            &ctx.accounts.quote_vault,
+            quote_token_program.key,
+            &config.quote_mint,
+            &config_key,
+        )?;
+        require_token_account(
+            &ctx.accounts.user_mna_account,
+            &TOKEN_2022_PROGRAM_ID,
+            &config.mna_mint,
+            &user_key,
         )?;
 
-        let signer_seeds: &[&[&[u8]]] = &[&[CONFIG_SEED, &[config.bump]]];
-        let mint_accounts = MintTo {
-            mint: ctx.accounts.mna_mint.to_account_info(),
-            to: ctx.accounts.user_mna_account.to_account_info(),
-            authority: ctx.accounts.config.to_account_info(),
-        };
+        let mna_amount = quote_amount_to_mna(quote_amount)?;
+        let quote_decimals = config.quote_decimals;
+        let bump = config.bump;
+
+        transfer_checked(
+            quote_token_program,
+            &ctx.accounts.user_quote_account,
+            &ctx.accounts.quote_mint,
+            &ctx.accounts.quote_vault,
+            &ctx.accounts.user,
+            quote_amount,
+            quote_decimals,
+            None,
+        )?;
+
+        let signer_seeds: &[&[&[u8]]] = &[&[CONFIG_SEED, &[bump]]];
         mint_to(
-            CpiContext::new_with_signer(
-                ctx.accounts.mna_token_program.to_account_info(),
-                mint_accounts,
-                signer_seeds,
-            ),
+            &ctx.accounts.mna_token_program,
+            &ctx.accounts.mna_mint,
+            &ctx.accounts.user_mna_account,
+            &ctx.accounts.config.to_account_info(),
             mna_amount,
+            signer_seeds,
         )?;
 
         emit!(MnaMinted {
-            user: ctx.accounts.user.key(),
+            user: user_key,
             quote_amount,
             mna_amount,
         });
@@ -111,44 +441,85 @@ pub mod manna_controller {
         require!(!config.paused, MannaError::Paused);
         require!(mna_amount > 0, MannaError::ZeroAmount);
 
+        let quote_token_program = &ctx.accounts.quote_token_program;
+        require_keys_eq!(
+            quote_token_program.key(),
+            config.quote_token_program,
+            MannaError::InvalidTokenProgram
+        );
+        require_keys_eq!(
+            ctx.accounts.mna_token_program.key(),
+            TOKEN_2022_PROGRAM_ID,
+            MannaError::InvalidMnaTokenProgram
+        );
+        require_keys_eq!(
+            ctx.accounts.mna_mint.key(),
+            config.mna_mint,
+            MannaError::InvalidTokenAccount
+        );
+        require_keys_eq!(
+            ctx.accounts.quote_mint.key(),
+            config.quote_mint,
+            MannaError::InvalidTokenAccount
+        );
+        require_keys_eq!(
+            ctx.accounts.quote_vault.key(),
+            config.quote_vault,
+            MannaError::InvalidTokenAccount
+        );
+
+        let user_key = ctx.accounts.user.key();
+        let config_key = config.key();
+        require_token_account(
+            &ctx.accounts.user_mna_account,
+            &TOKEN_2022_PROGRAM_ID,
+            &config.mna_mint,
+            &user_key,
+        )?;
+        let vault = require_token_account(
+            &ctx.accounts.quote_vault,
+            quote_token_program.key,
+            &config.quote_mint,
+            &config_key,
+        )?;
+        require_token_account(
+            &ctx.accounts.user_quote_account,
+            quote_token_program.key,
+            &config.quote_mint,
+            &user_key,
+        )?;
+
         let quote_amount = mna_to_quote_amount(mna_amount)?;
         require!(
-            ctx.accounts.quote_vault.amount >= quote_amount,
+            vault.amount >= quote_amount,
             MannaError::InsufficientReserve
         );
 
-        let burn_accounts = Burn {
-            mint: ctx.accounts.mna_mint.to_account_info(),
-            from: ctx.accounts.user_mna_account.to_account_info(),
-            authority: ctx.accounts.user.to_account_info(),
-        };
+        let quote_decimals = config.quote_decimals;
+        let bump = config.bump;
+
         burn(
-            CpiContext::new(
-                ctx.accounts.mna_token_program.to_account_info(),
-                burn_accounts,
-            ),
+            &ctx.accounts.mna_token_program,
+            &ctx.accounts.user_mna_account,
+            &ctx.accounts.mna_mint,
+            &ctx.accounts.user,
             mna_amount,
         )?;
 
-        let signer_seeds: &[&[&[u8]]] = &[&[CONFIG_SEED, &[config.bump]]];
-        let quote_transfer_accounts = TransferChecked {
-            from: ctx.accounts.quote_vault.to_account_info(),
-            mint: ctx.accounts.quote_mint.to_account_info(),
-            to: ctx.accounts.user_quote_account.to_account_info(),
-            authority: ctx.accounts.config.to_account_info(),
-        };
+        let signer_seeds: &[&[&[u8]]] = &[&[CONFIG_SEED, &[bump]]];
         transfer_checked(
-            CpiContext::new_with_signer(
-                ctx.accounts.quote_token_program.to_account_info(),
-                quote_transfer_accounts,
-                signer_seeds,
-            ),
+            quote_token_program,
+            &ctx.accounts.quote_vault,
+            &ctx.accounts.quote_mint,
+            &ctx.accounts.user_quote_account,
+            &ctx.accounts.config.to_account_info(),
             quote_amount,
-            config.quote_decimals,
+            quote_decimals,
+            Some(signer_seeds),
         )?;
 
         emit!(MnaRedeemed {
-            user: ctx.accounts.user.key(),
+            user: user_key,
             mna_amount,
             quote_amount,
         });
@@ -183,102 +554,71 @@ pub struct Initialize<'info> {
     pub admin: Signer<'info>,
     #[account(init, payer = payer, space = 8 + ControllerConfig::INIT_SPACE, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, ControllerConfig>,
-    pub mna_mint: InterfaceAccount<'info, Mint>,
-    pub quote_mint: InterfaceAccount<'info, Mint>,
-    #[account(
-        init,
-        payer = payer,
-        associated_token::mint = quote_mint,
-        associated_token::authority = config,
-        associated_token::token_program = quote_token_program
-    )]
-    pub quote_vault: InterfaceAccount<'info, TokenAccount>,
-    pub mna_token_program: Interface<'info, TokenInterface>,
-    pub quote_token_program: Interface<'info, TokenInterface>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
+    /// CHECK: validated in the handler via `load_mint` against Token-2022.
+    pub mna_mint: UncheckedAccount<'info>,
+    /// CHECK: validated in the handler via `load_mint` against the quote token program.
+    pub quote_mint: UncheckedAccount<'info>,
+    /// CHECK: created and address-pinned by the Associated Token Program CPI,
+    /// then validated via `require_token_account`.
+    #[account(mut)]
+    pub quote_vault: UncheckedAccount<'info>,
+    /// CHECK: address-checked against Token-2022 in the handler.
+    pub mna_token_program: UncheckedAccount<'info>,
+    /// CHECK: checked to be Token or Token-2022 in the handler.
+    pub quote_token_program: UncheckedAccount<'info>,
+    /// CHECK: address-checked against the Associated Token Program in the handler.
+    pub associated_token_program: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
 pub struct MintMna<'info> {
     pub user: Signer<'info>,
-    #[account(
-        seeds = [CONFIG_SEED],
-        bump = config.bump,
-        constraint = !config.paused @ MannaError::Paused
-    )]
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, ControllerConfig>,
-    #[account(address = config.mna_mint)]
-    pub mna_mint: InterfaceAccount<'info, Mint>,
-    #[account(address = config.quote_mint)]
-    pub quote_mint: InterfaceAccount<'info, Mint>,
-    #[account(
-        mut,
-        token::mint = quote_mint,
-        token::authority = user,
-        token::token_program = quote_token_program
-    )]
-    pub user_quote_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(
-        mut,
-        address = config.quote_vault,
-        token::mint = quote_mint,
-        token::authority = config,
-        token::token_program = quote_token_program
-    )]
-    pub quote_vault: InterfaceAccount<'info, TokenAccount>,
-    #[account(
-        mut,
-        token::mint = mna_mint,
-        token::authority = user,
-        token::token_program = mna_token_program
-    )]
-    pub user_mna_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(address = TOKEN_2022_PROGRAM_ID)]
-    pub mna_token_program: Interface<'info, TokenInterface>,
-    #[account(address = config.quote_token_program)]
-    pub quote_token_program: Interface<'info, TokenInterface>,
+    /// CHECK: address-checked against `config.mna_mint` in the handler.
+    #[account(mut)]
+    pub mna_mint: UncheckedAccount<'info>,
+    /// CHECK: address-checked against `config.quote_mint` in the handler.
+    pub quote_mint: UncheckedAccount<'info>,
+    /// CHECK: mint/owner validated in the handler.
+    #[account(mut)]
+    pub user_quote_account: UncheckedAccount<'info>,
+    /// CHECK: address-checked against `config.quote_vault` and validated in the handler.
+    #[account(mut)]
+    pub quote_vault: UncheckedAccount<'info>,
+    /// CHECK: mint/owner validated in the handler.
+    #[account(mut)]
+    pub user_mna_account: UncheckedAccount<'info>,
+    /// CHECK: address-checked against Token-2022 in the handler.
+    pub mna_token_program: UncheckedAccount<'info>,
+    /// CHECK: address-checked against `config.quote_token_program` in the handler.
+    pub quote_token_program: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
 pub struct RedeemMna<'info> {
     pub user: Signer<'info>,
-    #[account(
-        seeds = [CONFIG_SEED],
-        bump = config.bump,
-        constraint = !config.paused @ MannaError::Paused
-    )]
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
     pub config: Account<'info, ControllerConfig>,
-    #[account(address = config.mna_mint)]
-    pub mna_mint: InterfaceAccount<'info, Mint>,
-    #[account(address = config.quote_mint)]
-    pub quote_mint: InterfaceAccount<'info, Mint>,
-    #[account(
-        mut,
-        token::mint = mna_mint,
-        token::authority = user,
-        token::token_program = mna_token_program
-    )]
-    pub user_mna_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(
-        mut,
-        address = config.quote_vault,
-        token::mint = quote_mint,
-        token::authority = config,
-        token::token_program = quote_token_program
-    )]
-    pub quote_vault: InterfaceAccount<'info, TokenAccount>,
-    #[account(
-        mut,
-        token::mint = quote_mint,
-        token::authority = user,
-        token::token_program = quote_token_program
-    )]
-    pub user_quote_account: InterfaceAccount<'info, TokenAccount>,
-    #[account(address = TOKEN_2022_PROGRAM_ID)]
-    pub mna_token_program: Interface<'info, TokenInterface>,
-    #[account(address = config.quote_token_program)]
-    pub quote_token_program: Interface<'info, TokenInterface>,
+    /// CHECK: address-checked against `config.mna_mint` in the handler.
+    #[account(mut)]
+    pub mna_mint: UncheckedAccount<'info>,
+    /// CHECK: address-checked against `config.quote_mint` in the handler.
+    pub quote_mint: UncheckedAccount<'info>,
+    /// CHECK: mint/owner validated in the handler.
+    #[account(mut)]
+    pub user_mna_account: UncheckedAccount<'info>,
+    /// CHECK: address-checked against `config.quote_vault` and validated in the handler.
+    #[account(mut)]
+    pub quote_vault: UncheckedAccount<'info>,
+    /// CHECK: mint/owner validated in the handler.
+    #[account(mut)]
+    pub user_quote_account: UncheckedAccount<'info>,
+    /// CHECK: address-checked against Token-2022 in the handler.
+    pub mna_token_program: UncheckedAccount<'info>,
+    /// CHECK: address-checked against `config.quote_token_program` in the handler.
+    pub quote_token_program: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -351,4 +691,8 @@ pub enum MannaError {
     ArithmeticOverflow,
     #[msg("The reserve vault does not have enough quote tokens")]
     InsufficientReserve,
+    #[msg("Token account or mint failed validation")]
+    InvalidTokenAccount,
+    #[msg("Unsupported token program")]
+    InvalidTokenProgram,
 }

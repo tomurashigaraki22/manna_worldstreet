@@ -3,4 +3,12 @@ members = ["programs/manna-controller"]
 resolver = "2"
 
 [profile.release]
+# Size is the binding constraint here: on-chain rent is charged per byte of the
+# deployed .so, so we optimize for size over compute units.
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+incremental = false
 overflow-checks = true

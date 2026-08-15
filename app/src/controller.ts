@@ -76,7 +76,8 @@ export function buildMintInstruction(args: {
     keys: [
       meta(args.user, true),
       meta(args.config),
-      meta(args.mnaMint),
+      // Writable: MintTo increments the mint's supply.
+      meta(args.mnaMint, false, true),
       meta(args.quoteMint),
       meta(args.userQuoteAccount, false, true),
       meta(args.quoteVault, false, true),
@@ -107,7 +108,8 @@ export function buildRedeemInstruction(args: {
     keys: [
       meta(args.user, true),
       meta(args.config),
-      meta(args.mnaMint),
+      // Writable: Burn decrements the mint's supply.
+      meta(args.mnaMint, false, true),
       meta(args.quoteMint),
       meta(args.userMnaAccount, false, true),
       meta(args.quoteVault, false, true),
