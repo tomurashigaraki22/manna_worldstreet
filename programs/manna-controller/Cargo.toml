@@ -10,13 +10,12 @@ name = "manna_controller"
 
 [features]
 no-entrypoint = []
-cpi = ["no-entrypoint"]
 default = []
-idl-build = ["anchor-lang/idl-build"]
 
 [dependencies]
-# anchor-spl is deliberately not a dependency: pulling it in links the whole
-# spl-token-2022 crate (extension tables, StateWithExtensions) for what amounts
-# to three CPIs and a handful of field reads. Those are hand-rolled in lib.rs
-# against the SPL Token account layouts, which both Token and Token-2022 share.
-anchor-lang = "0.32.1"
+# Deliberately bare: no anchor-lang, no anchor-spl. Deploy rent is charged per
+# byte of the .so, and the framework's dispatch/serialization machinery cost
+# more than the program itself. Instruction discriminators, account ordering,
+# the config account layout, event encoding and error codes are all kept
+# byte-compatible with the previous Anchor build, so the TS client is unchanged.
+solana-program = "2.3"

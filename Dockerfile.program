@@ -11,7 +11,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock Anchor.toml ./
 COPY programs ./programs
 
-RUN anchor build --no-idl
+# No Anchor in the program anymore, so build with cargo directly.
+RUN cargo build-sbf --manifest-path programs/manna-controller/Cargo.toml
 
 CMD ["sh", "-c", "\
     ls -l target/deploy/manna_controller.so; \
