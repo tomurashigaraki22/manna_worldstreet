@@ -145,12 +145,12 @@ fn amount_data(tag: u8, amount: u64) -> [u8; 9] {
     data
 }
 
-fn transfer_checked(
-    token_program: &AccountInfo,
-    from: &AccountInfo,
-    mint: &AccountInfo,
-    to: &AccountInfo,
-    authority: &AccountInfo,
+fn transfer_checked<'info>(
+    token_program: &AccountInfo<'info>,
+    from: &AccountInfo<'info>,
+    mint: &AccountInfo<'info>,
+    to: &AccountInfo<'info>,
+    authority: &AccountInfo<'info>,
     amount: u64,
     decimals: u8,
     signer_seeds: Option<&[&[&[u8]]]>,
@@ -184,11 +184,11 @@ fn transfer_checked(
     Ok(())
 }
 
-fn mint_to(
-    token_program: &AccountInfo,
-    mint: &AccountInfo,
-    to: &AccountInfo,
-    authority: &AccountInfo,
+fn mint_to<'info>(
+    token_program: &AccountInfo<'info>,
+    mint: &AccountInfo<'info>,
+    to: &AccountInfo<'info>,
+    authority: &AccountInfo<'info>,
     amount: u64,
     signer_seeds: &[&[&[u8]]],
 ) -> Result<()> {
@@ -209,11 +209,11 @@ fn mint_to(
     Ok(())
 }
 
-fn burn(
-    token_program: &AccountInfo,
-    from: &AccountInfo,
-    mint: &AccountInfo,
-    authority: &AccountInfo,
+fn burn<'info>(
+    token_program: &AccountInfo<'info>,
+    from: &AccountInfo<'info>,
+    mint: &AccountInfo<'info>,
+    authority: &AccountInfo<'info>,
     amount: u64,
 ) -> Result<()> {
     let ix = Instruction {
@@ -235,14 +235,14 @@ fn burn(
 /// Associated Token Program `Create` (tag 0) — fails if the ATA already exists,
 /// matching the semantics of Anchor's `init` constraint.
 #[allow(clippy::too_many_arguments)]
-fn create_associated_token_account(
-    ata_program: &AccountInfo,
-    payer: &AccountInfo,
-    ata: &AccountInfo,
-    owner: &AccountInfo,
-    mint: &AccountInfo,
-    system_program: &AccountInfo,
-    token_program: &AccountInfo,
+fn create_associated_token_account<'info>(
+    ata_program: &AccountInfo<'info>,
+    payer: &AccountInfo<'info>,
+    ata: &AccountInfo<'info>,
+    owner: &AccountInfo<'info>,
+    mint: &AccountInfo<'info>,
+    system_program: &AccountInfo<'info>,
+    token_program: &AccountInfo<'info>,
 ) -> Result<()> {
     let ix = Instruction {
         program_id: *ata_program.key,
