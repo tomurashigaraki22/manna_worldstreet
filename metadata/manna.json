@@ -2,7 +2,7 @@
   "name": "Manna",
   "symbol": "MNA",
   "description": "Manna (MNA) Devnet test token.",
-  "image": "<LOGO_URL>",
+  "image": "https://watchup.site/manna.png",
   "properties": {
     "category": "fungible",
     "network": "devnet",

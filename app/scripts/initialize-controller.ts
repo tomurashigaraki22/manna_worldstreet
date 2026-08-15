@@ -8,6 +8,7 @@ async function main() {
   const config = loadConfig();
   const payer = config.feePayer ?? config.admin;
   if (!payer) throw new Error('Set FEE_PAYER_KEYPAIR_PATH or ADMIN_KEYPAIR_PATH');
+  const admin = config.admin ?? payer;
   const mnaMint = new PublicKey(requiredEnv('MNA_MINT_ADDRESS'));
   const quoteMint = new PublicKey(requiredEnv('QUOTE_MINT_ADDRESS'));
   const connection = new Connection(config.rpcUrl, 'confirmed');
@@ -20,6 +21,7 @@ async function main() {
   );
   const ix = buildInitializeInstruction({
     payer: payer.publicKey,
+    admin: admin.publicKey,
     config: controllerConfig,
     mnaMint,
     quoteMint,
@@ -30,10 +32,11 @@ async function main() {
   const signature = await sendAndConfirmTransaction(
     connection,
     new Transaction().add(ix),
-    [payer],
+    admin.publicKey.equals(payer.publicKey) ? [payer] : [payer, admin],
   );
   console.log(JSON.stringify({
     controllerProgram: config.programId.toBase58(),
+    admin: admin.publicKey.toBase58(),
     config: controllerConfig.toBase58(),
     mnaMint: mnaMint.toBase58(),
     quoteMint: quoteMint.toBase58(),

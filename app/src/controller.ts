@@ -29,6 +29,7 @@ function meta(pubkey: PublicKey, isSigner = false, isWritable = false): AccountM
 
 export function buildInitializeInstruction(args: {
   payer: PublicKey;
+  admin: PublicKey;
   config: PublicKey;
   mnaMint: PublicKey;
   quoteMint: PublicKey;
@@ -42,6 +43,7 @@ export function buildInitializeInstruction(args: {
     programId,
     keys: [
       meta(args.payer, true, true),
+      meta(args.admin, true),
       meta(args.config, false, true),
       meta(args.mnaMint),
       meta(args.quoteMint),

@@ -6,7 +6,7 @@ use anchor_spl::token_interface::{
     TransferChecked,
 };
 
-declare_id!("G5g6sekcjmuxNriHN2K6kca2tFVXXqL1C6yd5uLpvoTj");
+declare_id!("7QZLtciaBCeLy5uyooZERzBNbPLNuQ6Ppc4iA2kqEsyR");
 
 const CONFIG_SEED: &[u8] = b"config";
 const TOKEN_2022_PROGRAM_ID: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
@@ -39,7 +39,7 @@ pub mod manna_controller {
             MannaError::InvalidQuoteDecimals
         );
 
-        config.admin = ctx.accounts.payer.key();
+        config.admin = ctx.accounts.admin.key();
         config.mna_mint = mna_mint.key();
         config.quote_mint = quote_mint.key();
         config.quote_vault = ctx.accounts.quote_vault.key();
@@ -180,6 +180,7 @@ fn mna_to_quote_amount(mna_amount: u64) -> Result<u64> {
 pub struct Initialize<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
+    pub admin: Signer<'info>,
     #[account(init, payer = payer, space = 8 + ControllerConfig::INIT_SPACE, seeds = [CONFIG_SEED], bump)]
     pub config: Account<'info, ControllerConfig>,
     pub mna_mint: InterfaceAccount<'info, Mint>,

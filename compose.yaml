@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      context: .
+    env_file:
+      - .env
+    volumes:
+      - /home/ubuntu/.config/solana/manna-worldstreet:/home/ubuntu/.config/solana/manna-worldstreet:ro
+  anchor:
+    image: solanafoundation/anchor:v0.32.1
+    working_dir: /workspace
+    entrypoint: ["anchor"]
+    command: ["build"]
+    volumes:
+      - .:/workspace
+      - /home/ubuntu/.config/solana/manna-worldstreet:/home/ubuntu/.config/solana/manna-worldstreet:ro

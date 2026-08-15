@@ -14,7 +14,7 @@ export const SYSTEM_PROGRAM_ID = new PublicKey(
   '11111111111111111111111111111111',
 );
 export const CONTROLLER_PROGRAM_ID = new PublicKey(
-  'G5g6sekcjmuxNriHN2K6kca2tFVXXqL1C6yd5uLpvoTj',
+  '7QZLtciaBCeLy5uyooZERzBNbPLNuQ6Ppc4iA2kqEsyR',
 );
 export const CONFIG_SEED = 'config';
 

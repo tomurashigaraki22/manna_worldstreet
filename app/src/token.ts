@@ -1,7 +1,9 @@
 import {
   AuthorityType,
   ExtensionType,
+  LENGTH_SIZE,
   TOKEN_2022_PROGRAM_ID as SPL_TOKEN_2022_PROGRAM_ID,
+  TYPE_SIZE,
   createInitializeMetadataPointerInstruction,
   createInitializeMintInstruction,
   createSetAuthorityInstruction,
@@ -43,10 +45,8 @@ export async function createMnaMint(args: {
     uri: args.metadataUri,
     additionalMetadata: [],
   }).length;
-  const mintLength = getMintLen(
-    [ExtensionType.MetadataPointer, ExtensionType.TokenMetadata],
-    { [ExtensionType.TokenMetadata]: metadataLength },
-  );
+  const mintLength =
+    getMintLen([ExtensionType.MetadataPointer]) + TYPE_SIZE + LENGTH_SIZE + metadataLength;
   const lamports = await args.connection.getMinimumBalanceForRentExemption(mintLength);
 
   const transaction = new Transaction().add(

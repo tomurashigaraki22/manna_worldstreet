@@ -18,7 +18,10 @@
     "check-wallet": "tsx app/scripts/check-wallet.ts",
     "inspect": "tsx app/scripts/inspect.ts",
     "verify": "tsx app/scripts/verify.ts",
-    "bootstrap-devnet": "tsx app/scripts/bootstrap-devnet.ts"
+    "bootstrap-devnet": "tsx app/scripts/bootstrap-devnet.ts",
+    "docker:test": "docker compose run --rm app npm test",
+    "docker:typecheck": "docker compose run --rm app npm run typecheck",
+    "docker:build-program": "docker compose run --rm anchor"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",
@@ -32,5 +35,10 @@
     "tsx": "4.20.3",
     "typescript": "5.9.2",
     "vitest": "3.2.4"
+  },
+  "overrides": {
+    "rpc-websockets": {
+      "uuid": "11.1.0"
+    }
   }
 }
