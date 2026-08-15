@@ -1,0 +1,11 @@
+{
+  "name": "Manna",
+  "symbol": "MNA",
+  "description": "Manna (MNA) Devnet test token.",
+  "image": "<LOGO_URL>",
+  "properties": {
+    "category": "fungible",
+    "network": "devnet",
+    "token_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+  }
+}

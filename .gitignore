@@ -1,0 +1,13 @@
+node_modules/
+target/
+test-ledger/
+.anchor/
+.env
+.env.*
+!.env.example
+*.keypair.json
+*.keypair
+keys/
+deployments/
+artifacts/
+coverage/

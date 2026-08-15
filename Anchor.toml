@@ -1,0 +1,12 @@
+[programs.devnet]
+manna_controller = "G5g6sekcjmuxNriHN2K6kca2tFVXXqL1C6yd5uLpvoTj"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[workspace]
+members = ["programs/manna-controller"]
+
+[scripts]
+test = "anchor test"

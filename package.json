@@ -1,0 +1,36 @@
+{
+  "name": "manna-solana",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Manna (MNA) Solana Devnet token and on-chain controller",
+  "scripts": {
+    "build:program": "anchor build",
+    "test:program": "anchor test",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "preflight": "tsx app/scripts/preflight.ts",
+    "create-mock-quote": "tsx app/scripts/create-mock-quote.ts",
+    "create-mna": "tsx app/scripts/create-mna.ts",
+    "initialize-controller": "tsx app/scripts/initialize-controller.ts",
+    "mint-mna": "tsx app/scripts/mint-mna.ts",
+    "redeem-mna": "tsx app/scripts/redeem-mna.ts",
+    "transfer-mna": "tsx app/scripts/transfer-mna.ts",
+    "check-wallet": "tsx app/scripts/check-wallet.ts",
+    "inspect": "tsx app/scripts/inspect.ts",
+    "verify": "tsx app/scripts/verify.ts",
+    "bootstrap-devnet": "tsx app/scripts/bootstrap-devnet.ts"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
+    "@solana/spl-token": "0.4.15",
+    "@solana/spl-token-metadata": "0.1.6",
+    "@solana/web3.js": "1.98.4",
+    "dotenv": "16.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.3.0",
+    "tsx": "4.20.3",
+    "typescript": "5.9.2",
+    "vitest": "3.2.4"
+  }
+}
