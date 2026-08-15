@@ -2,7 +2,7 @@
   "name": "Manna",
   "symbol": "MNA",
   "description": "Manna (MNA) is the stable-value utility token for the Worldstreet ecosystem on Solana mainnet. It is designed to support settlement for Worldstreet transactions, including buying and selling digital goods and services, transfers between participants, and integrations with Worldstreet financial applications. MNA uses six decimal places and is issued through the Worldstreet token system.",
-  "image": "https://watchup.site/manna.png",
+  "image": "https://watchup.site/manna-new.png",
   "external_url": "https://worldstreetgold.com",
   "attributes": [
     { "trait_type": "Network", "value": "Solana Mainnet" },

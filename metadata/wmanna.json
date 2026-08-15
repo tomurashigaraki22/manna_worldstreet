@@ -2,7 +2,7 @@
   "name": "WManna",
   "symbol": "WMNA",
   "description": "WManna (WMNA) is the utility currency of the Worldstreet ecosystem, designed to power transactions and digital commerce across Worldstreet—from trading and asset purchases to integrated financial services.",
-  "image": "https://watchup.site/manna.png",
+  "image": "https://watchup.site/manna-new.png",
   "external_url": "https://worldstreetgold.com",
   "attributes": [
     { "trait_type": "Network", "value": "Solana Mainnet" },
@@ -12,7 +12,7 @@
   "properties": {
     "category": "fungible",
     "files": [
-      { "uri": "https://watchup.site/manna.png", "type": "image/png" }
+      { "uri": "https://watchup.site/manna-new.png", "type": "image/png" }
     ]
   }
 }
